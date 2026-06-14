@@ -2,7 +2,7 @@ name: Lab 01 — App Service
 
 on:
   push:
-    branches: ["lab/01-App-Service-deploy"]
+    branches: ["lab/01-app-service-deploy"]
     paths:
       - "01-app-service/**"
       - ".github/workflows/lab01-app-service.yml"
