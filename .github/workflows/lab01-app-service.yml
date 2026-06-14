@@ -2,7 +2,7 @@ name: Lab 01 — App Service
 
 on:
   push:
-    branches: ["lab/01-app-service-deploy"]
+    branches: ["lab/01-qpp-service-deploy"]
     paths:
       - "01-app-service/**"
       - ".github/workflows/lab01-app-service.yml"
@@ -63,10 +63,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     if: github.event_name != 'pull_request'
-    outputs:
-      webAppName: ${{ steps.deploy.outputs.webAppName }}
-      stagingSlotUrl: ${{ steps.deploy.outputs.stagingSlotUrl }}
-      webAppUrl: ${{ steps.deploy.outputs.webAppUrl }}
     steps:
       - uses: actions/checkout@v4
 
@@ -83,30 +79,19 @@ jobs:
             --tags     lab=01 environment=${{ env.ENVIRONMENT }}
 
       - name: Deploy Bicep
-        id: deploy
         run: |
-          OUTPUT=$(az deployment group create \
+          az deployment group create \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file  01-app-service/infra/main.bicep \
             --parameters \
                 environment=${{ env.ENVIRONMENT }} \
-                nameSuffix=${{ env.NAME_SUFFIX }} \
-            --query properties.outputs \
-            --output json)
+                nameSuffix=${{ env.NAME_SUFFIX }}
 
-          echo "Full output: $OUTPUT"
-
-          WEB_APP_NAME=$(echo $OUTPUT | jq -r '.webAppName.value')
-          WEB_APP_URL=$(echo $OUTPUT | jq -r '.webAppUrl.value')
-          STAGING_URL=$(echo $OUTPUT | jq -r '.stagingSlotUrl.value')
-
-          echo "webAppName=$WEB_APP_NAME"
-          echo "webAppUrl=$WEB_APP_URL"
-          echo "stagingSlotUrl=$STAGING_URL"
-
-          echo "webAppName=$WEB_APP_NAME"     >> $GITHUB_OUTPUT
-          echo "webAppUrl=$WEB_APP_URL"       >> $GITHUB_OUTPUT
-          echo "stagingSlotUrl=$STAGING_URL"  >> $GITHUB_OUTPUT
+      - name: Confirm deployed resources
+        run: |
+          az resource list \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --output table
 
   # ── 3. Deploy App to Staging Slot ─────────────────────────
   deploy-staging:
@@ -134,21 +119,27 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Debug outputs
+      - name: Get web app name from Azure
+        id: get-app
         run: |
-          echo "App name: ${{ needs.infra.outputs.webAppName }}"
-          echo "Staging URL: ${{ needs.infra.outputs.stagingSlotUrl }}"
+          WEB_APP_NAME=$(az webapp list \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query "[0].name" \
+            --output tsv)
+          echo "✅ Found app: $WEB_APP_NAME"
+          echo "webAppName=$WEB_APP_NAME" >> $GITHUB_OUTPUT
 
       - name: Deploy to staging slot
         uses: azure/webapps-deploy@v3
         with:
-          app-name: ${{ needs.infra.outputs.webAppName }}
+          app-name: ${{ steps.get-app.outputs.webAppName }}
           slot-name: staging
           package: deploy.zip
 
       - name: Smoke test staging
         run: |
-          STAGING_URL="${{ needs.infra.outputs.stagingSlotUrl }}"
+          WEB_APP_NAME="${{ steps.get-app.outputs.webAppName }}"
+          STAGING_URL="https://${WEB_APP_NAME}-staging.azurewebsites.net"
           echo "Testing $STAGING_URL/health ..."
           for i in {1..5}; do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health")
@@ -165,29 +156,40 @@ jobs:
     needs: [infra, deploy-staging]
     environment:
       name: production
-      url: ${{ needs.infra.outputs.webAppUrl }}
     steps:
       - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Get web app name from Azure
+        id: get-app
+        run: |
+          WEB_APP_NAME=$(az webapp list \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query "[0].name" \
+            --output tsv)
+          echo "✅ Found app: $WEB_APP_NAME"
+          echo "webAppName=$WEB_APP_NAME" >> $GITHUB_OUTPUT
+
       - name: Swap slots
         run: |
           az webapp deployment slot swap \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --name           ${{ needs.infra.outputs.webAppName }} \
+            --name           ${{ steps.get-app.outputs.webAppName }} \
             --slot           staging \
             --target-slot    production
 
       - name: Smoke test production
         run: |
-          PROD_URL="${{ needs.infra.outputs.webAppUrl }}"
+          WEB_APP_NAME="${{ steps.get-app.outputs.webAppName }}"
+          PROD_URL="https://${WEB_APP_NAME}.azurewebsites.net"
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL/health")
           echo "Production health — HTTP $STATUS"
           [ "$STATUS" = "200" ] || (echo "Production health check failed" && exit 1)
 
       - name: Print URLs
         run: |
-          echo " Production: ${{ needs.infra.outputs.webAppUrl }}"
-          echo " Staging:    ${{ needs.infra.outputs.stagingSlotUrl }}"
+          WEB_APP_NAME="${{ steps.get-app.outputs.webAppName }}"
+          echo "✅ Production: https://${WEB_APP_NAME}.azurewebsites.net"
+          echo "✅ Staging:    https://${WEB_APP_NAME}-staging.azurewebsites.net"
