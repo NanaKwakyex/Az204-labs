@@ -93,9 +93,18 @@ jobs:
             --query properties.outputs \
             --output json)
 
-          echo "webAppName=$(echo $OUTPUT     | jq -r .webAppName.value)"     >> $GITHUB_OUTPUT
-          echo "webAppUrl=$(echo $OUTPUT      | jq -r .webAppUrl.value)"      >> $GITHUB_OUTPUT
-          echo "stagingSlotUrl=$(echo $OUTPUT | jq -r .stagingSlotUrl.value)" >> $GITHUB_OUTPUT
+          echo "Full output: $OUTPUT"
+          WEB_APP_NAME=$(echo $OUTPUT | jq -r '.webAppName.value')
+          WEB_APP_URL=$(echo $OUTPUT | jq -r '.webAppUrl.value')
+          STAGING_URL=$(echo $OUTPUT | jq -r '.stagingSlotUrl.value')
+
+          echo "webAppName=$WEB_APP_NAME"
+          echo "webAppUrl=$WEB_APP_URL"
+          echo "stagingSlotUrl=$STAGING_URL"
+
+          echo "webAppName=$WEB_APP_NAME"     >> $GITHUB_OUTPUT
+          echo "webAppUrl=$WEB_APP_URL"       >> $GITHUB_OUTPUT
+          echo "stagingSlotUrl=$STAGING_URL"  >> $GITHUB_OUTPUT
 
   # ── 3. Deploy App to Staging Slot ─────────────────────────
   deploy-staging:
