@@ -4,15 +4,12 @@
 //
 // Provisions:
 //   - Log Analytics Workspace
-//   - App Service Plan (B1 Windows)
+//   - App Service Plan (B1 Linux)
 //   - Web App + staging slot (system-assigned managed identity)
 //   - Key Vault + access policies for both identities
 //   - Key Vault secret (seed value)
 //   - App settings (patched after KV exists to avoid circular ref)
 //   - Diagnostic Settings → Log Analytics
-//
-// Note: Windows plan used instead of Linux due to Azure for Students
-//       Linux worker quota restrictions.
 //
 // Circular reference fix:
 //   webApp is declared first with a placeholder MY_SECRET value.
@@ -67,7 +64,7 @@ resource law 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
 // ── 2. App Service Plan ────────────────────────────────────
 // B1 is the cheapest tier that supports deployment slots.
 // Free (F1) does NOT support slots — common exam gotcha.
-// Windows plan: kind='app', reserved=false.
+// reserved: true is required for Linux plans.
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
   name: planName
   location: location
@@ -75,9 +72,9 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
     name: appServicePlanSku
     tier: 'Basic'
   }
-  kind: 'app'
+  kind: 'linux'
   properties: {
-    reserved: false
+    reserved: true
   }
 }
 
@@ -88,7 +85,7 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
 resource webApp 'Microsoft.Web/sites@2023-01-01' = {
   name: webAppName
   location: location
-  kind: 'app'
+  kind: 'app,linux'
   identity: {
     type: 'SystemAssigned'
   }
@@ -96,7 +93,7 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
     serverFarmId: appServicePlan.id
     httpsOnly: true
     siteConfig: {
-      pythonVersion: pythonVersion
+      linuxFxVersion: 'PYTHON|${pythonVersion}'
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
@@ -126,7 +123,7 @@ resource stagingSlot 'Microsoft.Web/sites/slots@2023-01-01' = {
   name: 'staging'
   parent: webApp
   location: location
-  kind: 'app'
+  kind: 'app,linux'
   identity: {
     type: 'SystemAssigned'
   }
@@ -134,7 +131,7 @@ resource stagingSlot 'Microsoft.Web/sites/slots@2023-01-01' = {
     serverFarmId: appServicePlan.id
     httpsOnly: true
     siteConfig: {
-      pythonVersion: pythonVersion
+      linuxFxVersion: 'PYTHON|${pythonVersion}'
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
