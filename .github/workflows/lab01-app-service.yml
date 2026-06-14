@@ -21,7 +21,7 @@ on:
 
 env:
   RESOURCE_GROUP: rg-az204-lab01
-  LOCATION: westus
+  LOCATION: eastus
   NAME_SUFFIX: ${{ secrets.LAB_NAME_SUFFIX }} # e.g. "abc12" — set in repo secrets
   ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
 
