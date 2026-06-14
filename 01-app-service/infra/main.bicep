@@ -4,12 +4,15 @@
 //
 // Provisions:
 //   - Log Analytics Workspace
-//   - App Service Plan (B1 Linux)
+//   - App Service Plan (B1 Windows)
 //   - Web App + staging slot (system-assigned managed identity)
 //   - Key Vault + access policies for both identities
 //   - Key Vault secret (seed value)
 //   - App settings (patched after KV exists to avoid circular ref)
 //   - Diagnostic Settings → Log Analytics
+//
+// Note: Windows plan used instead of Linux due to Azure for Students
+//       Linux worker quota restrictions.
 //
 // Circular reference fix:
 //   webApp is declared first with a placeholder MY_SECRET value.
@@ -36,12 +39,11 @@ param appServicePlanSku string = 'B1'
 param pythonVersion string = '3.11'
 
 // ── Naming ─────────────────────────────────────────────────
-// All names are derived from parameters — no hardcoded values.
-// nameSuffix comes from your LAB_NAME_SUFFIX GitHub Actions secret.
+// All names derived from parameters — no hardcoded values.
 // Example with nameSuffix=xk7f2, environment=dev:
 //   planName     → az204-plan-xk7f2-dev
 //   webAppName   → az204-app-xk7f2-dev
-//   keyVaultName → az204-kv-xk7f2-dev   (Key Vault max 24 chars)
+//   keyVaultName → az204-kv-xk7f2-dev
 //   lawName      → az204-law-xk7f2-dev
 var prefix = 'az204'
 var planName = '${prefix}-plan-${nameSuffix}-${environment}'
@@ -65,7 +67,7 @@ resource law 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
 // ── 2. App Service Plan ────────────────────────────────────
 // B1 is the cheapest tier that supports deployment slots.
 // Free (F1) does NOT support slots — common exam gotcha.
-// reserved: true is required for Linux plans.
+// Windows plan: kind='app', reserved=false.
 resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
   name: planName
   location: location
@@ -73,9 +75,9 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
     name: appServicePlanSku
     tier: 'Basic'
   }
-  kind: 'linux'
+  kind: 'app'
   properties: {
-    reserved: true
+    reserved: false
   }
 }
 
@@ -86,7 +88,7 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-01-01' = {
 resource webApp 'Microsoft.Web/sites@2023-01-01' = {
   name: webAppName
   location: location
-  kind: 'app,linux'
+  kind: 'app'
   identity: {
     type: 'SystemAssigned'
   }
@@ -94,7 +96,7 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
     serverFarmId: appServicePlan.id
     httpsOnly: true
     siteConfig: {
-      linuxFxVersion: 'PYTHON|${pythonVersion}'
+      pythonVersion: pythonVersion
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
@@ -118,13 +120,13 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
 }
 
 // ── 4. Staging Deployment Slot ─────────────────────────────
-// Also declared before Key Vault for the same reason —
-// stagingSlot.identity.principalId is needed in the KV access policy.
+// Declared before Key Vault so stagingSlot.identity.principalId
+// is available for the KV access policy.
 resource stagingSlot 'Microsoft.Web/sites/slots@2023-01-01' = {
   name: 'staging'
   parent: webApp
   location: location
-  kind: 'app,linux'
+  kind: 'app'
   identity: {
     type: 'SystemAssigned'
   }
@@ -132,7 +134,7 @@ resource stagingSlot 'Microsoft.Web/sites/slots@2023-01-01' = {
     serverFarmId: appServicePlan.id
     httpsOnly: true
     siteConfig: {
-      linuxFxVersion: 'PYTHON|${pythonVersion}'
+      pythonVersion: pythonVersion
       ftpsState: 'Disabled'
       minTlsVersion: '1.2'
       appSettings: [
@@ -202,8 +204,7 @@ resource mySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
 // ── 7. Web App Settings (with real KV reference) ───────────
 // Microsoft.Web/sites/config 'appsettings' REPLACES all app settings —
 // it is not additive. Every setting you need must be listed here.
-// This resource depends on keyVault and mySecret implicitly via the
-// @Microsoft.KeyVault(...) URI, and Bicep resolves the order correctly.
+// keyVault removed from dependsOn — already implicit via vaultUri reference.
 resource webAppSettings 'Microsoft.Web/sites/config@2023-01-01' = {
   name: 'appsettings'
   parent: webApp
@@ -218,6 +219,7 @@ resource webAppSettings 'Microsoft.Web/sites/config@2023-01-01' = {
 }
 
 // ── 8. Staging Slot Settings (with real KV reference) ──────
+// keyVault removed from dependsOn — already implicit via vaultUri reference.
 resource stagingSlotSettings 'Microsoft.Web/sites/slots/config@2023-01-01' = {
   name: 'appsettings'
   parent: stagingSlot
@@ -253,8 +255,7 @@ resource webAppDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-pre
 }
 
 // ── Outputs ────────────────────────────────────────────────
-// These are captured by the GitHub Actions workflow and passed
-// between jobs (infra → deploy-staging → swap).
+// Captured by GitHub Actions workflow and passed between jobs.
 output webAppName string = webApp.name
 output webAppUrl string = 'https://${webApp.properties.defaultHostName}'
 output stagingSlotUrl string = 'https://${stagingSlot.properties.defaultHostName}'
