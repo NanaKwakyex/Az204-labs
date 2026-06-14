@@ -29,8 +29,8 @@ param location string = resourceGroup().location
 @maxLength(6)
 param nameSuffix string
 
-@description('App Service Plan SKU — B1 minimum for deployment slots')
-param appServicePlanSku string = 'B1'
+@description('App Service Plan SKU — S1 in order to get the swap spot explitcitly')
+param appServicePlanSku string = 'S1'
 
 @description('Python runtime version')
 param pythonVersion string = '3.11'
