@@ -1,0 +1,178 @@
+name: Lab 01 — App Service
+
+on:
+  push:
+    branches: ["lab/01-App-Service-deploy"]
+    paths:
+      - "01-app-service/**"
+      - ".github/workflows/lab01-app-service.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "01-app-service/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "dev"
+        type: choice
+        options: [dev, staging, prod]
+
+env:
+  RESOURCE_GROUP: rg-az204-lab01
+  LOCATION: eastus
+  NAME_SUFFIX: ${{ secrets.LAB_NAME_SUFFIX }} # e.g. "abc12" — set in repo secrets
+  ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+
+jobs:
+  # ── 1. Validate Bicep ─────────────────────────────────────
+  validate:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Bicep Lint
+        run: az bicep build --file 01-app-service/infra/main.bicep
+
+      - name: What-if (dry run)
+        run: |
+          az group create \
+            --name  ${{ env.RESOURCE_GROUP }} \
+            --location ${{ env.LOCATION }} \
+            --tags  lab=01 environment=${{ env.ENVIRONMENT }}
+
+          az deployment group what-if \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file  01-app-service/infra/main.bicep \
+            --parameters \
+                environment=${{ env.ENVIRONMENT }} \
+                nameSuffix=${{ env.NAME_SUFFIX }}
+
+  # ── 2. Provision Infrastructure ───────────────────────────
+  infra:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    needs: validate
+    # Only deploy infra on pushes / manual triggers — not on PRs
+    if: github.event_name != 'pull_request'
+    outputs:
+      webAppName: ${{ steps.deploy.outputs.webAppName }}
+      stagingSlotUrl: ${{ steps.deploy.outputs.stagingSlotUrl }}
+      webAppUrl: ${{ steps.deploy.outputs.webAppUrl }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Create Resource Group
+        run: |
+          az group create \
+            --name     ${{ env.RESOURCE_GROUP }} \
+            --location ${{ env.LOCATION }} \
+            --tags     lab=01 environment=${{ env.ENVIRONMENT }}
+
+      - name: Deploy Bicep
+        id: deploy
+        run: |
+          OUTPUT=$(az deployment group create \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --template-file  01-app-service/infra/main.bicep \
+            --parameters \
+                environment=${{ env.ENVIRONMENT }} \
+                nameSuffix=${{ env.NAME_SUFFIX }} \
+            --query properties.outputs \
+            --output json)
+
+          echo "webAppName=$(echo $OUTPUT     | jq -r .webAppName.value)"     >> $GITHUB_OUTPUT
+          echo "webAppUrl=$(echo $OUTPUT      | jq -r .webAppUrl.value)"      >> $GITHUB_OUTPUT
+          echo "stagingSlotUrl=$(echo $OUTPUT | jq -r .stagingSlotUrl.value)" >> $GITHUB_OUTPUT
+
+  # ── 3. Deploy App to Staging Slot ─────────────────────────
+  deploy-staging:
+    name: Deploy to Staging Slot
+    runs-on: ubuntu-latest
+    needs: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r 01-app-service/src/requirements.txt
+
+      - name: Create deployment package
+        run: |
+          cd 01-app-service/src
+          zip -r ../../deploy.zip .
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy to staging slot
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ needs.infra.outputs.webAppName }}
+          slot-name: staging
+          package: deploy.zip
+
+      - name: Smoke test staging
+        run: |
+          STAGING_URL="${{ needs.infra.outputs.stagingSlotUrl }}"
+          echo "Testing $STAGING_URL/health ..."
+          # Retry up to 5 times — slot may still be warming up
+          for i in {1..5}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health")
+            echo "Attempt $i — HTTP $STATUS"
+            [ "$STATUS" = "200" ] && break
+            sleep 15
+          done
+          [ "$STATUS" = "200" ] || (echo "Staging health check failed" && exit 1)
+
+  # ── 4. Swap Staging → Production ──────────────────────────
+  swap:
+    name: Swap Staging → Production
+    runs-on: ubuntu-latest
+    needs: [infra, deploy-staging]
+    environment:
+      name: production # requires a manual approval gate in GitHub Environments
+      url: ${{ needs.infra.outputs.webAppUrl }}
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Swap slots
+        run: |
+          az webapp deployment slot swap \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --name           ${{ needs.infra.outputs.webAppName }} \
+            --slot           staging \
+            --target-slot    production
+
+      - name: Smoke test production
+        run: |
+          PROD_URL="${{ needs.infra.outputs.webAppUrl }}"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$PROD_URL/health")
+          echo "Production health — HTTP $STATUS"
+          [ "$STATUS" = "200" ] || (echo "Production health check failed" && exit 1)
+
+      - name: Print URLs
+        run: |
+          echo "Successful Production: ${{ needs.infra.outputs.webAppUrl }}"
+          echo "Successful Staging:    ${{ needs.infra.outputs.stagingSlotUrl }}"
