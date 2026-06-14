@@ -22,7 +22,7 @@ on:
 env:
   RESOURCE_GROUP: rg-az204-lab01
   LOCATION: eastus2
-  NAME_SUFFIX: ${{ secrets.LAB_NAME_SUFFIX }} # e.g. "abc12" — set in repo secrets
+  NAME_SUFFIX: ${{ secrets.LAB_NAME_SUFFIX }}
   ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
 
 jobs:
@@ -41,13 +41,15 @@ jobs:
       - name: Bicep Lint
         run: az bicep build --file 01-app-service/infra/main.bicep
 
-      - name: What-if (dry run)
+      - name: Create Resource Group
         run: |
           az group create \
-            --name  ${{ env.RESOURCE_GROUP }} \
+            --name     ${{ env.RESOURCE_GROUP }} \
             --location ${{ env.LOCATION }} \
-            --tags  lab=01 environment=${{ env.ENVIRONMENT }}
+            --tags     lab=01 environment=${{ env.ENVIRONMENT }}
 
+      - name: What-if (dry run)
+        run: |
           az deployment group what-if \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --template-file  01-app-service/infra/main.bicep \
@@ -60,7 +62,6 @@ jobs:
     name: Deploy Infrastructure
     runs-on: ubuntu-latest
     needs: validate
-    # Only deploy infra on pushes / manual triggers — not on PRs
     if: github.event_name != 'pull_request'
     outputs:
       webAppName: ${{ steps.deploy.outputs.webAppName }}
@@ -94,6 +95,7 @@ jobs:
             --output json)
 
           echo "Full output: $OUTPUT"
+
           WEB_APP_NAME=$(echo $OUTPUT | jq -r '.webAppName.value')
           WEB_APP_URL=$(echo $OUTPUT | jq -r '.webAppUrl.value')
           STAGING_URL=$(echo $OUTPUT | jq -r '.stagingSlotUrl.value')
@@ -132,6 +134,11 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Debug outputs
+        run: |
+          echo "App name: ${{ needs.infra.outputs.webAppName }}"
+          echo "Staging URL: ${{ needs.infra.outputs.stagingSlotUrl }}"
+
       - name: Deploy to staging slot
         uses: azure/webapps-deploy@v3
         with:
@@ -143,7 +150,6 @@ jobs:
         run: |
           STAGING_URL="${{ needs.infra.outputs.stagingSlotUrl }}"
           echo "Testing $STAGING_URL/health ..."
-          # Retry up to 5 times — slot may still be warming up
           for i in {1..5}; do
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$STAGING_URL/health")
             echo "Attempt $i — HTTP $STATUS"
@@ -158,7 +164,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [infra, deploy-staging]
     environment:
-      name: production # requires a manual approval gate in GitHub Environments
+      name: production
       url: ${{ needs.infra.outputs.webAppUrl }}
     steps:
       - name: Azure Login
@@ -183,5 +189,5 @@ jobs:
 
       - name: Print URLs
         run: |
-          echo "Successful Production: ${{ needs.infra.outputs.webAppUrl }}"
-          echo "Successful Staging:    ${{ needs.infra.outputs.stagingSlotUrl }}"
+          echo " Production: ${{ needs.infra.outputs.webAppUrl }}"
+          echo " Staging:    ${{ needs.infra.outputs.stagingSlotUrl }}"
